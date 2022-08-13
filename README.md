@@ -16,4 +16,3 @@ Although I know this statement is from _[the Principle of Least Power](https://w
 Need to run on the server, because there are cross-domain issues with texture images.
 If you have Node.js environment, then you can execute `node server.js` command to run a simple server, and then access it through `http://localhost:3000/`.
 If the IDE you are using has its own static server function, then you can open the `/index.html` file in the browser through the IDE.
-Przetłumaczono za pomocą DeepL https://www.deepl.com/app/?utm_source=android&utm_medium=app&utm_campaign=share-translation
