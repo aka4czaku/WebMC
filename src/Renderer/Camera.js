@@ -1,4 +1,4 @@
-import {vec3, mat4} from "../utils/gmath.js";
+import { vec3, mat4 } from "../utils/math/index.js";
 
 class Camera {
     static get projectionType() {
@@ -145,14 +145,16 @@ class Camera {
         return this.pvM;
     };
     bindEntity(entity = null) {
-        if (entity === this.entity) return;
-        if (this.entity) this.entity.setCamera(null);
+        if (entity === this.entity) return this;
+        const lastEntity = this.entity;
         this.entity = entity;
+        if (lastEntity) lastEntity.setCamera(null);
         if (entity) entity.setCamera(this);
+        return this;
     };
 };
 
 export {
+    Camera as default,
     Camera,
-    Camera as default
 };

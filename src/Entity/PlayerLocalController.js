@@ -1,8 +1,10 @@
 
 import { EntityController } from "./EntityController.js";
 import { Block } from "../World/Block.js";
-import { vec3 } from "../utils/gmath.js";
-import { pm } from "../UI/Page.js";
+import { vec3 } from "../utils/math/index.js";
+import { pm } from "../UI/pages/Page.js";
+import { Item } from "./Item.js";
+import { settings } from "../settings.js";
 
 class PlayerLocalController extends EntityController {
     constructor(player = null, {
@@ -10,11 +12,9 @@ class PlayerLocalController extends EntityController {
         canvas = playPage? playPage.mainCanvas: null,
         moveButtons = playPage? playPage.moveButtons: null,
         hotbarUI = playPage? playPage.hotbar: null,
-        mousemoveSensitivity = 200,
+        mousemoveSensitivity = settings.mousemoveSensitivity,
     } = {}) {
         super(player);
-        this.playPage = playPage;
-        this.hotbarUI = hotbarUI;
         this.mousemoveSensitivity = mousemoveSensitivity;
         this.eventHandler = this.eventHandler.bind(this);
         this["pause=>play"] = this.requestPointerLock.bind(this);
@@ -25,32 +25,53 @@ class PlayerLocalController extends EntityController {
         this.canvasTouchMoveLen = 0;
         this.canvasDestroying = false;
         this.keys = [];
+        this.hotbar = [];
+        this.inventoryStore = Block.listBlocks();
+        this.setPlayPage(playPage, { canvas, moveButtons, hotbarUI });
+        this.settingsListenerID = settings.addEventListener("changedValue", (key, value) => {
+            if (key !== "mousemoveSensitivity") return;
+            this.mousemoveSensitivity = value;
+        });
+    };
+    setPlayPage(playPage = null, {
+        canvas = playPage? playPage.mainCanvas: null,
+        moveButtons = playPage? playPage.moveButtons: null,
+        hotbarUI = playPage? playPage.hotbar: null,
+    } = {}) {
+        if (this.playPage) {
+            this.hotbarUI.removeEventListener("selectBlock", this.onHotbarUISelectBlock);
+            this.playPage.removeEventListener("closeInventory", this.onCloseInventory);
+            this.playPage.removeEventListener("showInventory", this.onShowInventory);
+            this.setCanvas();
+            this.setMoveBtns();
+        }
+        this.playPage = playPage;
+        this.hotbarUI = hotbarUI;
         this.setCanvas(canvas);
         this.setMoveBtns(moveButtons);
-
         this.hotbar = [];
-        const listBlocks = Block.listBlocks();
-        this.inventoryStore = listBlocks;
+        if (!playPage) return;
+        playPage.inventory.clear();
+        const listBlocks = this.inventoryStore;
         for (let b of listBlocks)
             playPage.inventory.appendItem(b);
         for (let i = 0; i < hotbarUI.length; ++i) {
             this.hotbar.push(listBlocks[i]);
             hotbarUI.setItem(listBlocks[i], i);
         }
-        hotbarUI.addEventListener("selectBlock", e => {
-            this.entity.onHandItem = e.detail || Block.getBlockByBlockName("air");
-        });
-        playPage.addEventListener("closeInventory", e => {
-            this.requestPointerLock();
-        });
-        playPage.addEventListener("showInventory", e => {
-            this.exitPointerLock();
-        });
+        hotbarUI.addEventListener("selectBlock", this.onHotbarUISelectBlock);
+        playPage.addEventListener("closeInventory", this.onCloseInventory);
+        playPage.addEventListener("showInventory", this.onShowInventory);
     };
+    onHotbarUISelectBlock = e => {
+        this.entity.onHandItem = e.detail || Block.getBlockByBlockName("air");
+    };
+    onCloseInventory = e => { this.requestPointerLock(); };
+    onShowInventory = e => { this.exitPointerLock(); };
     dispose() {
-        this.setEntity();
-        this.setCanvas();
-        this.setMoveBtns();
+        super.dispose();
+        this.setPlayPage();
+        settings.removeEventListenerByID(this.settingsListenerID);
     };
     get locked() { return window.isTouchDevice || this._locked; };
     setCanvas(canvas = null) {
@@ -134,7 +155,7 @@ class PlayerLocalController extends EntityController {
         if (type in this) this[type](event);
         this.dispatchEvent(type, event);
     };
-    getHitting(bType = Block.renderType.NORMAL) {
+    getHitting(bTypes = [Block.renderType.NORMAL, Block.renderType.FLOWER, Block.renderType.CACTUS]) {
         let entity = this.entity,
             world = entity.world,
             start = entity.getEyePosition(),
@@ -142,7 +163,7 @@ class PlayerLocalController extends EntityController {
         vec3.add(start, end, end);
         return world.rayTraceBlock(start, end, (x, y, z) => {
             let b = world.getBlock(x, y, z);
-            return b && b.name !== "air" && b.renderType === bType;
+            return b && b.name !== "air" && bTypes.includes(b.renderType);
         });
     };
     _setEntityPitchAndYaw(movementX, movementY) {
@@ -207,6 +228,16 @@ class PlayerLocalController extends EntityController {
         if (!this.locked) return;
         if (e.cancelable) e.preventDefault();
         if (e.repeat) return;
+        if (e.key == 'Q' || e.key == 'q') {
+            let item = new Item({
+                thrower: this.entity,
+                longID: this.entity.onHandItem.longID,
+                position: this.entity.position,
+                world: this.entity.world,
+            });
+            this.entity.world.entities.push(item);
+            this.entity.world.dispatchEvent("onAddEntity", item);
+        }
         if (e.key == 'E' || e.key == 'e') {
             if (this.locked) {
                 this.showStopPage = false;

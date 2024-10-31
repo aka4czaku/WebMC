@@ -1,4 +1,4 @@
-import { vec3, vec2 } from "../utils/gmath.js";
+import { vec3, vec2 } from "../utils/math/index.js";
 
 function lerp(a, b, t) {
     return (1 - t) * a + t * b;
@@ -34,8 +34,7 @@ function toSeed(seed) {
     if (!Number.isNaN(s)) seed = s;
     if (typeof seed === "number") {
         if (Number.isInteger(seed)) {
-            if (Number.isSafeInteger(seed)) s = seed;
-            else s = seed % MAX_SAFE_PRIME;
+            s = seed % MAX_SAFE_PRIME;
         }
         else {
             seed *= Math.PI;

@@ -1,39 +1,126 @@
 import Chunk from "./Chunk.js";
-import Block from "./Block.js";
+import { Block, LongID } from "./Block.js";
 import Player from "../Entity/Player.js";
-import { vec3, radian2degree } from "../utils/gmath.js";
+import { vec3, radian2degree } from "../utils/math/index.js";
 import { PerlinNoise } from "./noise.js";
 import { FluidCalculator } from "./WorldFluidCal.js";
 import { ChunksLightCalculation } from "./WorldLight.js";
-import { asyncLoadResByUrl } from "../utils/loadResources.js";
 import { EventDispatcher } from "../utils/EventDispatcher.js";
+import { settings } from "../settings.js";
 
-let worldDefaultConfig = {};
-asyncLoadResByUrl("src/World/worldDefaultConfig.json")
-.then(cfg => {
-    worldDefaultConfig = cfg;
-});
+class WorldStorage {
+    constructor(id) {
+        this.id = id;
+        let worlds = this._getWorlds();
+        if (!(id in worlds)) worlds[id] = {
+            createAt: Date.now(),
+            modifyAt: Date.now(),
+        };
+        this._setWorlds(worlds);
+    };
+    _getWorlds() { return JSON.parse(localStorage.getItem("worlds") || "{}"); };
+    _setWorlds(data) { localStorage.setItem("worlds", JSON.stringify(data)); };
+    _updateWorld(fn) {
+        let worlds = this._getWorlds();
+        let ans = fn(worlds[this.id]);
+        worlds[this.id].modifyAt = Date.now();
+        this._setWorlds(worlds);
+        return ans;
+    };
+    get(key, defaultValue) {
+        key = key.split(">");
+        return this._updateWorld(world => {
+            let p = world;
+            for (let k of key)
+                if (!(p = p[k]))
+                    return defaultValue;
+            return p;
+        });
+    };
+    set(key, value) {
+        key = key.split(">");
+        return this._updateWorld(world => {
+            let lp = null, p = world;
+            for (let i = 0; i < key.length; ++i) {
+                let k = key[i];
+                lp = p; p = p[k];
+                if (i != key.length - 1) {
+                    if (!p) lp[k] = p = {};
+                }
+                else return lp[k] = value;
+            }
+        });
+    };
+    del(key) {
+        key = key.split(">");
+        return this._updateWorld(world => {
+            let lp = null, p = world;
+            for (let i = 0; i < key.length; ++i) {
+                let k = key[i];
+                lp = p; p = p[k];
+                if (!p) return;
+                if (i == key.length - 1)
+                    return delete lp[k];
+            }
+        });
+    };
+};
 
 class World extends EventDispatcher {
-    static get config() { return worldDefaultConfig; };
 
     constructor({
         worldName = "My World",
-        worldType = World.config.terrain,
+        worldType = "pre-classic",
         renderer = null,
         seed = Date.now(),
+        storageId = null,
     } = {}) {
         super();
+        if (seed === "") seed = Date.now();
+        if (worldName === "") worldName = "My World";
+        if (!(["flat", "pre-classic"].includes(worldType))) {
+            console.warn("Undefined world type: " + worldType);
+            worldType = "pre-classic";
+        }
+        if (storageId != null) {
+            this.storager = new WorldStorage(storageId);
+            seed = this.storager.get("seed");
+            worldName = this.storager.get("name");
+            worldType = this.storager.get("type");
+            this.seed = seed;
+            this.noise = new PerlinNoise(seed);
+        }
+        else {
+            this.seed = seed;
+            this.noise = new PerlinNoise(seed);
+            storageId = Date.now() + "-" + this.noise.seed;
+            this.storager = new WorldStorage(storageId);
+            this.storager.set("name", worldName);
+            this.storager.set("type", worldType);
+            this.storager.set("seed", seed);
+        }
         this.name = worldName;
         this.type = worldType;
         this.chunkMap = {};
         this.callbacks = {};
-        this.mainPlayer = new Player(this);
-        this.entitys = [this.mainPlayer];
+        let entities = this.storager.get("entities", []);
+        if (entities.length) {
+            this.entities = entities.map(entity => {
+                switch (entity.type) {
+                case "Player": return Player.from(entity).setWorld(this);
+                // case "Entity": return Entity.from(entity).setWorld(this);
+                }
+            });
+            let mainPlayerUid = this.storager.get("mainPlayer");
+            this.mainPlayer = this.entities.find(ent => ent.uid == mainPlayerUid);
+        }
+        else {
+            this.mainPlayer = new Player(this);
+            this.entities = [this.mainPlayer];
+            this.saveEntities();
+            this.storager.set("mainPlayer", this.mainPlayer.uid);
+        }
         this.renderer = renderer;
-        this.seed = seed;
-        this.noise = new PerlinNoise(seed);
-        this.generator = this.generator.bind(this);
         for (let x = -2; x <= 2; ++x)
         for (let z = -2; z <= 2; ++z)
         for (let y = 2; y >= -2; --y)
@@ -41,8 +128,17 @@ class World extends EventDispatcher {
         this.fluidCalculator = new FluidCalculator(this);
         this.lightingCalculator = new ChunksLightCalculation(this);
         this.setRenderer(renderer);
+
+        this.tickTimerId = null;
+        this.lastTickTimestamp = performance.now();
+        this.beforeTick();
     };
-    generator(chunkX, chunkY, chunkZ, tileMap) {
+
+    saveEntities() {
+        this.storager.set("entities", this.entities.map(ent => ent.toObj()));
+    };
+
+    generator = (chunkX, chunkY, chunkZ, tileMap) => {
         switch(this.type) {
         case "flat":
             let block = Block.getBlockByBlockName(chunkY >= 0? "air":
@@ -148,13 +244,27 @@ class World extends EventDispatcher {
             }
             break;}
         }
+        let ck = Chunk.chunkKeyByChunkXYZ(chunkX, chunkY, chunkZ);
+        let data = this.storager.get("chunks>" + ck, {});
+        for (let lb in data) {
+            tileMap[lb] = new LongID(data[lb]);
+        }
     };
     setRenderer(renderer = null) {
-        if (!renderer) return;
+        if (renderer === this.renderer) return this;
+        const lastRenderer = this.renderer;
         this.renderer = renderer;
+        if (lastRenderer) {
+            lastRenderer.setWorld();
+            for (let ck in this.chunkMap) {
+                this.chunkMap[ck].setRenderer();
+            }
+        }
+        if (!renderer) return this;
         for (let ck in this.chunkMap) {
             this.chunkMap[ck].setRenderer(renderer);
         }
+        return this;
     };
     getChunkByChunkKey(chunkKey) {
         return this.chunkMap[chunkKey] || null;
@@ -200,7 +310,12 @@ class World extends EventDispatcher {
         [blockX, blockY, blockZ] = [blockX, blockY, blockZ].map(Math.floor);
         let c = this.chunkMap[Chunk.chunkKeyByBlockXYZ(blockX, blockY, blockZ)];
         if (c) {
-            let t = c.setBlock(...Chunk.getRelativeBlockXYZ(blockX, blockY, blockZ), blockName);
+            let rxyz = Chunk.getRelativeBlockXYZ(blockX, blockY, blockZ);
+            let t = c.setBlock(...rxyz, blockName);
+            let data = this.storager.get("chunks>" + c.chunkKey, {});
+            data[Chunk.getLinearBlockIndex(...rxyz)] = this.getTile(blockX, blockY, blockZ);
+            this.storager.set("chunks>" + c.chunkKey, data);
+            this.saveEntities();
             this.dispatchEvent("onTileChanges", blockX, blockY, blockZ);
             return t;
         }
@@ -224,40 +339,63 @@ class World extends EventDispatcher {
         if (c) return c.getTorchlight(...Chunk.getRelativeBlockXYZ(blockX, blockY, blockZ));
         return null;
     };
-    update(dt) {
+
+    // 每一帧触发 由renderer的requestAnimationFrame触发
+    onRender(timestamp, dt) {
         for (let ck in this.chunkMap) {
-            this.chunkMap[ck].update(dt);
+            this.chunkMap[ck].onRender(timestamp, dt);
         }
-        this.fluidCalculator.update(dt);
-        this.lightingCalculator.update(dt);
-        this.entitys.forEach(e => e.update(dt));
+        this.fluidCalculator.onRender(timestamp, dt);
+        this.lightingCalculator.onRender(timestamp, dt);
+        this.entities.forEach(e => e.onRender(timestamp, dt));
 
         const {mainPlayer} = this;
 
-        const hit = mainPlayer.controller.getHitting?.() ?? null;
-        let block = hit? this.getBlock(...hit.blockPos): null;
-        let longID = hit? this.getTile(...hit.blockPos): null;
-        let chunk = this.getChunkByBlockXYZ(...[...mainPlayer.position].map(n => n < 0? n - 1: n));
-        if (!this.fpss) this.fpss = [];
-        this.fpss.push(dt);
-        if (this.fpss.length > 15) this.fpss.shift();
-        document.getElementsByTagName("mcpage-play")[0].debugOutput.innerHTML = Object.entries({
-            "FPS: ": (1000 / (this.fpss.reduce((n, i) => n + i, 0) / this.fpss.length)).toFixed(2),
-            "Player:": [
-                "XYZ: " + [...mainPlayer.position].map(n => n.toFixed(1)).join(", "),
-                `Pitch: ${radian2degree(mainPlayer.pitch).toFixed(2)}°, Yaw: ${Math.abs(radian2degree(mainPlayer.yaw) * 100 % 36000 / 100).toFixed(2)}°`,
-                `Chunk: ${chunk? Chunk.getRelativeBlockXYZ(...mainPlayer.position).map(n => ~~n).join(" ") + " in " + [chunk.x, chunk.y, chunk.z].join(" "): "null"}`,
-                `Light: ${this.getLight(...mainPlayer.position)} (${this.getSkylight(...mainPlayer.position)} sky, ${this.getTorchlight(...mainPlayer.position)} block)`,
-            ],
-            "Crosshairs:": [
-                "XYZ: " + (hit? hit.blockPos.join(", "): "null") + " (" + (hit? hit.axis? hit.axis: "in block": "null") + ")",
-                `Block: ${block? block.name: "null"} (${longID?.id ?? "null"}, ${longID?.bd ?? "null"}, ${longID? longID: "null"})`,
-            ],
-        }).map(([k, v]) => `<p>${k}${
-            Array.isArray(v)
-            ? v.map(str => `<p>\t${str}</p>`).join("")
-            : v
-        }</p>`).join("");
+        if (settings.showDebugOutput) {
+            const hit = mainPlayer.controller.getHitting?.() ?? null;
+            let block = hit? this.getBlock(...hit.blockPos): null;
+            let longID = hit? this.getTile(...hit.blockPos): null;
+            let chunk = this.getChunkByBlockXYZ(...[...mainPlayer.position].map(n => n < 0? n - 1: n));
+            if (!this.fpss) this.fpss = [];
+            this.fpss.push(dt);
+            if (this.fpss.length > 15) this.fpss.shift();
+            document.getElementsByTagName("mcpage-play")[0].debugOutput.style.display = null;
+            document.getElementsByTagName("mcpage-play")[0].debugOutput.innerHTML = Object.entries({
+                "FPS: ": (1000 / (this.fpss.reduce((n, i) => n + i, 0) / this.fpss.length)).toFixed(2),
+                "Player:": [
+                    "XYZ: " + [...mainPlayer.position].map(n => n.toFixed(1)).join(", "),
+                    `Pitch: ${radian2degree(mainPlayer.pitch).toFixed(2)}°, Yaw: ${Math.abs(radian2degree(mainPlayer.yaw) * 100 % 36000 / 100).toFixed(2)}°`,
+                    `Chunk: ${chunk? Chunk.getRelativeBlockXYZ(...mainPlayer.position).map(n => ~~n).join(" ") + " in " + [chunk.x, chunk.y, chunk.z].join(" "): "null"}`,
+                    `Light: ${this.getLight(...mainPlayer.position)} (${this.getSkylight(...mainPlayer.position)} sky, ${this.getTorchlight(...mainPlayer.position)} block)`,
+                ],
+                "Crosshairs:": [
+                    `XYZ: ${hit? hit.blockPos.join(" "): "null"} (${
+                        hit? Chunk.getRelativeBlockXYZ(...hit.blockPos).join(" "): "null"
+                    }/${
+                        hit? Chunk.getLinearBlockIndex(...Chunk.getRelativeBlockXYZ(...hit.blockPos)): "null"
+                    } in ${
+                        hit? Chunk.getChunkXYZByBlockXYZ(...hit.blockPos).join(" "): "null"
+                    }, ${ hit? hit.axis? hit.axis: "in block": "null" })`,
+                    `Block: ${block? block.name: "null"} (${longID?.id ?? "null"}, ${longID?.bd ?? "null"}, ${longID? longID: "null"})`,
+                    `Face: ${
+                        block?.renderType === Block.renderType.FLOWER? "flower face": hit?.axis ?? "null"
+                    }, light: ${
+                        hit? this.getLight(...vec3.add(hit.blockPos, {"x+": [1,0,0], "x-": [-1,0,0], "y+": [0,1,0], "y-": [0,-1,0], "z+": [0,0,1], "z-": [0,0,-1]}[hit.axis] || [0,0,0], [])): "null"
+                    } (${
+                        hit? this.getSkylight(...vec3.add(hit.blockPos, {"x+": [1,0,0], "x-": [-1,0,0], "y+": [0,1,0], "y-": [0,-1,0], "z+": [0,0,1], "z-": [0,0,-1]}[hit.axis] || [0,0,0], [])): "null"
+                    } sky, ${
+                        hit? this.getTorchlight(...vec3.add(hit.blockPos, {"x+": [1,0,0], "x-": [-1,0,0], "y+": [0,1,0], "y-": [0,-1,0], "z+": [0,0,1], "z-": [0,0,-1]}[hit.axis] || [0,0,0], [])): "null"
+                    } block)`,
+                ],
+            }).map(([k, v]) => `<p>${k}${
+                Array.isArray(v)
+                ? v.map(str => `<p>\t${str}</p>`).join("")
+                : v
+            }</p>`).join("");
+        }
+        else {
+            document.getElementsByTagName("mcpage-play")[0].debugOutput.style.display = "none";
+        }
 
         let cxyz = Chunk.getChunkXYZByBlockXYZ(...mainPlayer.position),
             [cx, cy, cz] = cxyz;
@@ -268,6 +406,40 @@ class World extends EventDispatcher {
                 this.loadChunk(cx + dx, cy + dy, cz + dz);
         mainPlayer.lastChunk = cxyz;
     };
+    // 游戏刻 每秒触发20次 目的是分离渲染事件和游戏事件 为未来的多线程做准备
+    onTick() {
+        for (let ck in this.chunkMap) {
+            this.chunkMap[ck].onTick();
+        }
+        this.fluidCalculator.onTick();
+        this.lightingCalculator.onTick();
+        this.entities.forEach(e => e.onTick());
+
+        // 每 20s 存一次实体信息
+        if (Date.now() - (this.lastEntitiesSaveTime || 0) > 20_000) {
+            this.lastEntitiesSaveTime = Date.now();
+            this.saveEntities();
+        }
+    };
+    // 记录每一次的时间戳 调整下一次游戏刻的时间间隔 并执行回调
+    // 原始的mc实现中是通过渲染帧来调用游戏刻 但由于未来多线程中这两个回调是在不同线程中 而线程间通讯是有时间成本的
+    // 调用上和渲染帧无关，可以看作是乱序执行的，因此事件有可能会有一帧的延迟显示
+    beforeTick = () => {
+        let now = performance.now(), dt = now - this.lastTickTimestamp;
+        if (dt <= 50) {
+            this.lastTickTimestamp = now;
+            this.tickTimerId = setTimeout(this.beforeTick, 50);
+        }
+        else {
+            this.lastTickTimestamp += 50;
+            this.tickTimerId = setTimeout(this.beforeTick, 0);
+        }
+        if (this.renderer?.isPlaying()) {
+            this.onTick();
+            this.dispatchEvent("tick");
+        }
+    };
+
     // return null->uncollision    else -> { axis->("x+-y+-z+-": collision face, "": in block, b)lockPos}
     rayTraceBlock(start, end, chunkFn) {
         if (start.some(Number.isNaN) || end.some(Number.isNaN) || vec3.equals(start, end))
@@ -275,7 +447,7 @@ class World extends EventDispatcher {
         if (chunkFn(...start.map(Math.floor))) return {
             axis: "", blockPos: start.map(Math.floor)
         };
-        let vec = vec3.subtract(end, start),
+        let vec = vec3.subtract(end, start, end),
             len = vec3.length(vec),
             delta = vec3.create(),
             axisStepDir = vec3.create(),
@@ -360,9 +532,11 @@ class World extends EventDispatcher {
         }
         return null;
     };
+
+    dispose() {};
 };
 
 export {
+    World as default,
     World,
-    World as default
 };

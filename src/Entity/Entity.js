@@ -1,17 +1,18 @@
-import { vec3 } from "../utils/gmath.js";
+import { vec3 } from "../utils/math/index.js";
 
 class Entity {
     constructor(hitboxes, {
         eyePos = [
-            (hitboxes.max[0] - hitboxes.min[0] / 2),
-            (hitboxes.max[1] - hitboxes.min[1] / 2),
-            (hitboxes.max[2] - hitboxes.min[2] / 2)
+            (hitboxes.min[0] + hitboxes.min[0]) / 2,
+            (hitboxes.min[1] + hitboxes.min[1]) / 2,
+            (hitboxes.min[2] + hitboxes.min[2]) / 2
         ],
         pitch = 0, yaw = 0,
         position = [0, 0, 0],
         world = null,
         controller = null,
         camera = null,
+        uid = performance.timeOrigin + performance.now() + "-" + Math.random(),
     } = {}) {
         this.moveSpeed = 0;
         this.gravityAcceleration = 0;
@@ -26,6 +27,8 @@ class Entity {
         this.setWorld(world);
         this.setCamera(camera);
         this.setController(controller);
+        this.uid = uid;
+        this.type = "Entity";
     };
     getEyePosition() {
         return vec3.add(this.eyePos, this.position);
@@ -37,27 +40,49 @@ class Entity {
         };
     };
     getDirection(scale = 1) {
-        vec3.create(0, 0, -scale, this.direction);
-        vec3.rotateX(this.direction, this.pitch, this.direction);
-        vec3.rotateY(this.direction, this.yaw, this.direction);
-        return this.direction;
+        return vec3(this.direction)
+            .create(0, 0, -scale)
+            .rotateX(this.pitch)
+            .rotateY(this.yaw).res;
     };
     setCamera(camera = null) {
-        if (camera === this.camera) return;
-        if (this.camera) this.camera.bindEntity(null);
+        if (camera === this.camera) return this;
+        const lastCamera = this.camera;
         this.camera = camera;
+        if (lastCamera) lastCamera.bindEntity(null);
         if (camera) camera.bindEntity(this);
+        return this;
     };
     setController(controller = null) {
-        if (controller === this.controller) return;
-        if (this.controller) this.controller.setEntity(null);
+        if (controller === this.controller) return this;
+        const lastController = this.controller;
         this.controller = controller;
+        if (lastController) lastController.setEntity(null);
         if (controller) controller.setEntity(this);
+        return this;
     };
     setWorld(world = null) {
         this.world = world;
+        return this;
     };
-    update(dt) {};
+    onRender(timestamp, dt) {};
+    onTick() {};
+    toObj() {
+        const typedArr2arr = ta => Array.from(ta);
+        return {
+            moveSpeed: this.moveSpeed,
+            gravityAcceleration: this.gravityAcceleration,
+            position: typedArr2arr(this.position),
+            pitch: this.pitch,
+            yaw: this.yaw,
+            hitboxes: { min: this.hitboxes.min, max: this.hitboxes.max },
+            eyePos: typedArr2arr(this.eyePos),
+            forward: typedArr2arr(this.forward),
+            direction: typedArr2arr(this.direction),
+            uid: this.uid,
+            type: this.type,
+        };
+    };
 };
 
 export {

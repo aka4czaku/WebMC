@@ -1,6 +1,7 @@
 import { Block } from "../World/Block.js";
-import { vec3, mat4 } from "../utils/gmath.js";
+import { mat4 } from "../utils/math/index.js";
 import * as glsl from "./glsl.js";
+import { calCol } from "./WorldChunkModule.js";
 
 class HighlightSelectedBlock {
     constructor(world, renderer = world.renderer) {
@@ -64,9 +65,7 @@ class HighlightSelectedBlock {
             block = world.getBlock(bx, by, bz),
             selector = renderer.getProgram("selector").use(),
             linecol = [], surfaceCol = [];
-        mat4.identity(this.mvp);
-        mat4.translate(this.mvp, hit.blockPos, this.mvp);
-        mat4.multiply(mainPlayer.camera.projview, this.mvp, this.mvp);
+        mat4(this.mvp).E().translate(hit.blockPos).postMul(mainPlayer.camera.projview);
         selector.setUni("mvp", this.mvp);
         let mesh = this.meshs.get(block.renderType), lineMesh = mesh.line, surfaceMeshs = mesh.surface;
         switch (block.renderType) {
@@ -75,19 +74,19 @@ class HighlightSelectedBlock {
         case Block.renderType.NORMAL: {
             if (!hit.axis) break;
             let [dx, dy, dz] = ({"x+":[1,0,0], "x-":[-1,0,0], "y+":[0,1,0], "y-":[0,-1,0], "z+":[0,0,1], "z-":[0,0,-1]})[hit.axis];
-            let l = world.getLight(bx + dx, by + dy, bz + dz);
+            let l = world.getLight(bx + dx, by + dy, bz + dz), col = Math.min(1, calCol(l) + 0.1);
             linecol = [...Array(lineMesh.ver.length / 3 * 4)]
-                .map((_, i) => i % 4 === 3? 0.4: Math.min(1, Math.pow(0.9, 15 - l) + 0.1));
+                .map((_, i) => i % 4 === 3? 0.4: col);
             surfaceCol = [...Array(surfaceMeshs[hit.axis].ver.length / 3 * 4)]
-                .map((_, i) => i % 4 === 3? 0.1: Math.min(1, Math.pow(0.9, 15 - l) + 0.1));
-            break;}
+                .map((_, i) => i % 4 === 3? 0.1: col);
+            break; }
         case Block.renderType.FLOWER: {
-            let l = world.getLight(bx, by, bz);
+            let l = world.getLight(bx, by, bz), col = Math.min(1, calCol(l) + 0.1);
             linecol = [...Array(lineMesh.ver.length / 3 * 4)]
-                .map((_, i) => i % 4 === 3? 0.4: Math.min(1, Math.pow(0.9, 15 - l) + 0.1));
+                .map((_, i) => i % 4 === 3? 0.4: col);
             surfaceCol = [...Array(surfaceMeshs.face.ver.length / 3 * 4)]
-                .map((_, i) => i % 4 === 3? 0.1: Math.min(1, Math.pow(0.9, 15 - l) + 0.1));
-            break;}
+                .map((_, i) => i % 4 === 3? 0.1: col);
+            break; }
         }
         let lineColBO = lineMesh.defaultCol;
         if (linecol.length) {
@@ -136,6 +135,6 @@ class HighlightSelectedBlock {
 };
 
 export {
-    HighlightSelectedBlock,
     HighlightSelectedBlock as default,
+    HighlightSelectedBlock,
 };
